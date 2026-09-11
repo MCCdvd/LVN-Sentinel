@@ -39,9 +39,14 @@ def run_sentinel():
 
     found_signals = [s for s in all_results if s.get("signal") in {"LONG", "SHORT"}]
     prices_map = {s["ticker"]: s["price"] for s in all_results if s.get("price") is not None}
+    daily_signals_map = {
+        s["ticker"]: str(s.get("signal", "")).upper().strip()
+        for s in all_results
+        if s.get("ticker")
+    }
 
     try:
-        updates = portfolio_manager.update_all_positions(prices_map)
+        updates = portfolio_manager.update_all_positions(prices_map, daily_signals_map)
         for up_msg in updates:
             telegram_manager.send_alert(f"⚠️ <b>UPDATE:</b> {up_msg}")
             logger.info("Update posizione: %s", up_msg)

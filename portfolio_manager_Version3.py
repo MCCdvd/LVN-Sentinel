@@ -129,10 +129,13 @@ def save_to_history(ticker: str, pnl: float, note: str = ""):
     logger.info("Salvata history per %s: %s", ticker, pnl)
 
 
-def update_all_positions(current_prices_map: dict):
+def update_all_positions(current_prices_map: dict, daily_signals_map: dict = None):
     port = _read_csv_safe(DB_PATH, PORTFOLIO_COLUMNS)
     if port.empty:
         return []
+
+    if daily_signals_map is None:
+        daily_signals_map = {}
 
     messages = []
     indices_to_remove = []
@@ -159,13 +162,13 @@ def update_all_positions(current_prices_map: dict):
         if entry_price <= 0 or quantity <= 0:
             continue
 
-        rendimento = (
-            (current_price - entry_price) / entry_price
-            if position_type == "LONG"
-            else (entry_price - current_price) / entry_price
+        daily_signal = str(daily_signals_map.get(ticker, "")).upper().strip()
+        opposite_signal = (
+            (position_type == "LONG" and daily_signal == "SHORT")
+            or (position_type == "SHORT" and daily_signal == "LONG")
         )
 
-        if not tp1_hit and rendimento >= 0.04:
+        if not tp1_hit and opposite_signal:
             port.at[idx, "tp1_hit"] = True
             port.at[idx, "status"] = "PARTIAL"
 
@@ -186,7 +189,7 @@ def update_all_positions(current_prices_map: dict):
                 else round(current_price * 1.02, 4)
             )
 
-            messages.append(f"💰 TP1 RAGGIUNTO su {ticker}! Chiuso circa 50%.")
+            messages.append(f"💰 EXIT PARZIALE su {ticker} per segnale opposto ({daily_signal}). Chiuso circa 50%.")
 
         elif tp1_hit:
             is_exit = False
