@@ -12,9 +12,18 @@ DB_PATH = os.path.join(CONFIG.runtime.database_dir, "portfolio.csv")
 HIST_PATH = os.path.join(CONFIG.runtime.database_dir, "history.csv")
 
 PORTFOLIO_COLUMNS = [
-    "ticker", "status", "type", "entry_price", "quantity",
-    "current_stop", "tp1_hit", "pnl_euro", "entry_date", "invested_amount"
+    "ticker",
+    "status",
+    "type",
+    "entry_price",
+    "quantity",
+    "current_stop",
+    "tp1_hit",
+    "pnl_euro",
+    "entry_date",
+    "invested_amount",
 ]
+
 HISTORY_COLUMNS = ["date", "ticker", "pnl_euro", "note"]
 
 
@@ -76,8 +85,6 @@ def get_liquidity() -> float:
 
     liquidita = CONFIG.strategy.capitale_iniziale + pnl_realizzato - capitale_impegnato
     return round(float(liquidita), 2)
-import portfolio_manager_Version3 as _impl
-from portfolio_manager_Version3 import *  # noqa: F401,F403
 
 
 def open_position(ticker: str, signal_type: str, price: float) -> str:
@@ -88,21 +95,17 @@ def open_position(ticker: str, signal_type: str, price: float) -> str:
 
     port = _read_csv_safe(DB_PATH, PORTFOLIO_COLUMNS)
     liquidita = get_liquidity()
-    port = _impl._read_csv_safe(_impl.DB_PATH, _impl.PORTFOLIO_COLUMNS)
-    liquidita = _impl.get_liquidity()
 
     if not port.empty and ticker in port["ticker"].astype(str).values:
         return f"ℹ️ {ticker} è già in portafoglio."
 
     if liquidita < CONFIG.strategy.investimento_per_trade:
-    if liquidita < _impl.CONFIG.strategy.investimento_per_trade:
         return f"⚠️ Liquidità insufficiente ({liquidita}€) per {ticker}."
 
     if price <= 0:
         return f"⚠️ Prezzo non valido per {ticker}."
 
     quantity = int(CONFIG.strategy.investimento_per_trade / price)
-    quantity = int(_impl.CONFIG.strategy.investimento_per_trade / price)
     if quantity <= 0:
         return f"⚠️ Prezzo troppo alto per {ticker}."
 
@@ -121,7 +124,11 @@ def open_position(ticker: str, signal_type: str, price: float) -> str:
         "invested_amount": invested_amount,
     }
 
-    port = pd.concat([port, pd.DataFrame([new_pos])], ignore_index=True)
+    if port.empty:
+        port = pd.DataFrame([new_pos], columns=PORTFOLIO_COLUMNS)
+    else:
+        port = pd.concat([port, pd.DataFrame([new_pos])], ignore_index=True)
+
     port.to_csv(DB_PATH, index=False)
 
     logger.info("Aperta posizione %s %s @ %s", signal_type, ticker, price)
@@ -144,11 +151,12 @@ def save_to_history(ticker: str, pnl: float, note: str = ""):
     logger.info("Salvata history per %s: %s", ticker, pnl)
 
 
-def update_all_positions(current_prices_map: dict):
+def update_all_positions(current_prices_map: dict, daily_signals_map: dict | None = None):
     port = _read_csv_safe(DB_PATH, PORTFOLIO_COLUMNS)
     if port.empty:
         return []
 
+    daily_signals_map = daily_signals_map or {}
     messages = []
     indices_to_remove = []
 
@@ -174,45 +182,48 @@ def update_all_positions(current_prices_map: dict):
         if entry_price <= 0 or quantity <= 0:
             continue
 
-        rendimento = (
-            (current_price - entry_price) / entry_price
-            if position_type == "LONG"
-            else (entry_price - current_price) / entry_price
-        )
+        current_signal = str(daily_signals_map.get(ticker, "")).upper().strip()
 
-        if not tp1_hit and rendimento >= 0.04:
-            port.at[idx, "tp1_hit"] = True
-            port.at[idx, "status"] = "PARTIAL"
-
-            half_qty = quantity // 2 or quantity
-            closed_pnl = (
-                (current_price - entry_price) * half_qty
-                if position_type == "LONG"
-                else (entry_price - current_price) * half_qty
+        if not tp1_hit:
+            opposite_signal = (
+                (position_type == "LONG" and current_signal == "SHORT")
+                or (position_type == "SHORT" and current_signal == "LONG")
             )
 
-            pnl_euro = pnl_euro + closed_pnl - CONFIG.strategy.commissione_chiusura
-            remaining_qty = quantity - half_qty
+            if opposite_signal:
+                port.at[idx, "tp1_hit"] = True
+                port.at[idx, "status"] = "PARTIAL"
 
-            if remaining_qty <= 0:
-                total_pnl = round(pnl_euro, 2)
-                save_to_history(ticker, total_pnl, note="TP1 close")
-                indices_to_remove.append(idx)
-                messages.append(f"💰 TP1 RAGGIUNTO su {ticker}! Posizione chiusa interamente.")
+                half_qty = quantity // 2 or quantity
+                closed_pnl = (
+                    (current_price - entry_price) * half_qty
+                    if position_type == "LONG"
+                    else (entry_price - current_price) * half_qty
+                )
+
+                pnl_euro = pnl_euro + closed_pnl - CONFIG.strategy.commissione_chiusura
+                remaining_qty = quantity - half_qty
+
+                if remaining_qty <= 0:
+                    total_pnl = round(pnl_euro, 2)
+                    save_to_history(ticker, total_pnl, note="Opposite daily signal close")
+                    indices_to_remove.append(idx)
+                    messages.append(f"💰 Segnale opposto su {ticker}: posizione chiusa interamente.")
+                    continue
+
+                port.at[idx, "pnl_euro"] = round(pnl_euro, 2)
+                port.at[idx, "quantity"] = remaining_qty
+                port.at[idx, "invested_amount"] = round(invested_amount * (remaining_qty / quantity), 2)
+                port.at[idx, "current_stop"] = (
+                    round(current_price * 0.98, 4)
+                    if position_type == "LONG"
+                    else round(current_price * 1.02, 4)
+                )
+
+                messages.append(f"💰 Segnale opposto su {ticker}: chiuso circa 50%.")
                 continue
 
-            port.at[idx, "pnl_euro"] = round(pnl_euro, 2)
-            port.at[idx, "quantity"] = remaining_qty
-            port.at[idx, "invested_amount"] = round(invested_amount * (remaining_qty / quantity), 2)
-            port.at[idx, "current_stop"] = (
-                round(current_price * 0.98, 4)
-                if position_type == "LONG"
-                else round(current_price * 1.02, 4)
-            )
-
-            messages.append(f"💰 TP1 RAGGIUNTO su {ticker}! Chiuso circa 50%.")
-
-        elif tp1_hit:
+        if tp1_hit:
             is_exit = False
 
             if position_type == "LONG":
@@ -288,17 +299,3 @@ def get_performance_report(prices_map: dict) -> str:
         f"────────────────\n"
         f"📊 <b>Rendimento Totale:</b> {round(float(rendimento_pct), 2)}%"
     )
-        "pnl_euro": -_impl.CONFIG.strategy.commissione_apertura,
-        "entry_date": _impl.datetime.now().strftime("%Y-%m-%d"),
-        "invested_amount": invested_amount,
-    }
-
-    if port.empty:
-        port = _impl.pd.DataFrame([new_pos], columns=_impl.PORTFOLIO_COLUMNS)
-    else:
-        port = _impl.pd.concat([port, _impl.pd.DataFrame([new_pos])], ignore_index=True)
-
-    port.to_csv(_impl.DB_PATH, index=False)
-
-    _impl.logger.info("Aperta posizione %s %s @ %s", signal_type, ticker, price)
-    return f"🚀 APERTA POSIZIONE {signal_type} su {ticker} a {price}€ ({quantity} azioni)"

@@ -32,4 +32,3 @@ def setup_logging():
     logger.info("Log file: %s", CONFIG.logging.log_file)
 
     return logger
-from logging_setup_Version3 import *  # noqa: F401,F403

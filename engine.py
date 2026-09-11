@@ -126,7 +126,7 @@ def analyze_ticker(ticker_name: str) -> Optional[Dict]:
             "price": round(last_close, 3),
             "lvn": None,
             "signal": "WAIT",
-            "reason": "No valid LVN detected"
+            "reason": "No valid LVN detected",
         }
 
     target_lvn = None
@@ -146,25 +146,17 @@ def analyze_ticker(ticker_name: str) -> Optional[Dict]:
         "price": round(last_close, 3),
         "lvn": target_lvn,
         "signal": signal,
-        "reason": reason
+        "reason": reason,
     }
 
 
 def run_scanner() -> List[Dict]:
     if not os.path.exists(CONFIG.runtime.data_dir):
-#import engine_Version2 as _impl
-#from engine_Version2 import *  # noqa: F401,F403
-
-
-def run_scanner() -> _impl.List[_impl.Dict]:
-    if not _impl.os.path.exists(_impl.CONFIG.runtime.data_dir):
         return []
 
     results = []
 
     for file in sorted(os.listdir(CONFIG.runtime.data_dir)):
-        if not file.endswith(".csv"):
-    for file in sorted(_impl.os.listdir(_impl.CONFIG.runtime.data_dir)):
         if not file.endswith(".csv") or file == "failed_tickers.csv":
             continue
 
@@ -176,19 +168,15 @@ def run_scanner() -> _impl.List[_impl.Dict]:
                 results.append(res)
         except Exception as e:
             logger.exception("Errore analisi ticker %s", ticker)
-            res = _impl.analyze_ticker(ticker)
-            if res:
-                results.append(res)
-        except Exception as e:
-            _impl.logger.exception("Errore analisi ticker %s", ticker)
-            results.append({
-                "ticker": ticker,
-                "date": None,
-                "price": None,
-                "lvn": None,
-                "signal": "ERROR",
-                "reason": str(e)
-            })
+            results.append(
+                {
+                    "ticker": ticker,
+                    "date": None,
+                    "price": None,
+                    "lvn": None,
+                    "signal": "ERROR",
+                    "reason": str(e),
+                }
+            )
 
-    return results
     return results
