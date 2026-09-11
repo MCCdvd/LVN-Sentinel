@@ -9,6 +9,13 @@ from logging_setup import setup_logging
 logger = setup_logging()
 
 
+def _send_alert(message: str, context: str) -> bool:
+    sent = telegram_manager.send_alert(message)
+    if not sent:
+        logger.warning("Invio alert Telegram fallito (%s)", context)
+    return sent
+
+
 def run_sentinel():
     logger.info("AVVIO SISTEMA MULTI-TARGET")
     print(f"🔔 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} - AVVIO SISTEMA MULTI-TARGET")
@@ -43,17 +50,17 @@ def run_sentinel():
     try:
         updates = portfolio_manager.update_all_positions(prices_map)
         for up_msg in updates:
-            telegram_manager.send_alert(f"⚠️ <b>UPDATE:</b> {up_msg}")
+            _send_alert(f"⚠️ <b>UPDATE:</b> {up_msg}", f"update posizione {up_msg}")
             logger.info("Update posizione: %s", up_msg)
     except Exception as e:
         logger.exception("Errore update posizioni")
-        telegram_manager.send_alert(f"❌ <b>ERRORE UPDATE POSIZIONI:</b> {e}")
+        _send_alert(f"❌ <b>ERRORE UPDATE POSIZIONI:</b> {e}", "errore update posizioni")
 
     if found_signals:
         msg_signals = "🎯 <b>SEGNALI RILEVATI:</b>\n" + "".join(
             [f"• {s['ticker']}: {s['signal']} ({s['price']}€)\n" for s in found_signals]
         )
-        telegram_manager.send_alert(msg_signals)
+        _send_alert(msg_signals, "riepilogo segnali")
         logger.info("Segnali rilevati: %d", len(found_signals))
 
         for s in found_signals:
@@ -61,18 +68,20 @@ def run_sentinel():
                 res_open = portfolio_manager.open_position(s["ticker"], s["signal"], s["price"])
                 logger.info("Apertura posizione %s: %s", s["ticker"], res_open)
                 if "🚀" in res_open:
-                    telegram_manager.send_alert(f"✅ <b>ESECUZIONE:</b>\n{res_open}")
+                    _send_alert(f"✅ <b>ESECUZIONE:</b>\n{res_open}", f"esecuzione ordine {s['ticker']}")
             except Exception as e:
                 logger.exception("Errore apertura posizione su %s", s["ticker"])
-                telegram_manager.send_alert(f"❌ Errore apertura posizione su {s['ticker']}: {e}")
+                _send_alert(f"❌ Errore apertura posizione su {s['ticker']}: {e}", f"errore apertura {s['ticker']}")
 
     try:
         report = portfolio_manager.get_performance_report(prices_map)
-        telegram_manager.send_alert(report)
-        logger.info("Report finale inviato")
+        if _send_alert(report, "report finale"):
+            logger.info("Report finale inviato")
+        else:
+            logger.warning("Report finale non inviato")
     except Exception as e:
         logger.exception("Errore report finale")
-        telegram_manager.send_alert(f"❌ <b>ERRORE REPORT:</b> {e}")
+        _send_alert(f"❌ <b>ERRORE REPORT:</b> {e}", "errore report finale")
 
 
 if __name__ == "__main__":
