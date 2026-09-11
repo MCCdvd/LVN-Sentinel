@@ -152,8 +152,8 @@ def analyze_ticker(ticker_name: str) -> Optional[Dict]:
 
 def run_scanner() -> List[Dict]:
     if not os.path.exists(CONFIG.runtime.data_dir):
-import engine_Version2 as _impl
-from engine_Version2 import *  # noqa: F401,F403
+#import engine_Version2 as _impl
+#from engine_Version2 import *  # noqa: F401,F403
 
 
 def run_scanner() -> _impl.List[_impl.Dict]:
