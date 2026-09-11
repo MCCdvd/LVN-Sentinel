@@ -1,8 +1,8 @@
 # Example environment variables for LVN Sentinel
 # Copy this file to `.env` and fill in the real values locally.
 
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
+TELEGRAM_BOT_TOKEN= 7920327655:AAGornbRAi7csiSRnEMV6rfcy-SiRxDrkbw
+TELEGRAM_CHAT_ID= 8124801467
 
 CAPITALE_INIZIALE=100000.0
 INVESTIMENTO_PER_TRADE=10000.0

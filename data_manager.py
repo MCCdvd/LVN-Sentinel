@@ -190,3 +190,4 @@ def update_data():
 
 if __name__ == "__main__":
     update_data()
+from data_manager_Version2 import *  # noqa: F401,F403

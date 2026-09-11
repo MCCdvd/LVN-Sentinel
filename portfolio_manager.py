@@ -76,6 +76,8 @@ def get_liquidity() -> float:
 
     liquidita = CONFIG.strategy.capitale_iniziale + pnl_realizzato - capitale_impegnato
     return round(float(liquidita), 2)
+import portfolio_manager_Version3 as _impl
+from portfolio_manager_Version3 import *  # noqa: F401,F403
 
 
 def open_position(ticker: str, signal_type: str, price: float) -> str:
@@ -86,17 +88,21 @@ def open_position(ticker: str, signal_type: str, price: float) -> str:
 
     port = _read_csv_safe(DB_PATH, PORTFOLIO_COLUMNS)
     liquidita = get_liquidity()
+    port = _impl._read_csv_safe(_impl.DB_PATH, _impl.PORTFOLIO_COLUMNS)
+    liquidita = _impl.get_liquidity()
 
     if not port.empty and ticker in port["ticker"].astype(str).values:
         return f"ℹ️ {ticker} è già in portafoglio."
 
     if liquidita < CONFIG.strategy.investimento_per_trade:
+    if liquidita < _impl.CONFIG.strategy.investimento_per_trade:
         return f"⚠️ Liquidità insufficiente ({liquidita}€) per {ticker}."
 
     if price <= 0:
         return f"⚠️ Prezzo non valido per {ticker}."
 
     quantity = int(CONFIG.strategy.investimento_per_trade / price)
+    quantity = int(_impl.CONFIG.strategy.investimento_per_trade / price)
     if quantity <= 0:
         return f"⚠️ Prezzo troppo alto per {ticker}."
 
@@ -282,3 +288,17 @@ def get_performance_report(prices_map: dict) -> str:
         f"────────────────\n"
         f"📊 <b>Rendimento Totale:</b> {round(float(rendimento_pct), 2)}%"
     )
+        "pnl_euro": -_impl.CONFIG.strategy.commissione_apertura,
+        "entry_date": _impl.datetime.now().strftime("%Y-%m-%d"),
+        "invested_amount": invested_amount,
+    }
+
+    if port.empty:
+        port = _impl.pd.DataFrame([new_pos], columns=_impl.PORTFOLIO_COLUMNS)
+    else:
+        port = _impl.pd.concat([port, _impl.pd.DataFrame([new_pos])], ignore_index=True)
+
+    port.to_csv(_impl.DB_PATH, index=False)
+
+    _impl.logger.info("Aperta posizione %s %s @ %s", signal_type, ticker, price)
+    return f"🚀 APERTA POSIZIONE {signal_type} su {ticker} a {price}€ ({quantity} azioni)"

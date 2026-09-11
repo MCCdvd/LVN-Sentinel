@@ -181,3 +181,4 @@ def load_config() -> AppConfig:
 
 
 CONFIG = load_config()
+from config_Version6 import *  # noqa: F401,F403

@@ -56,3 +56,4 @@ def send_alert(message: str, parse_mode: str = "HTML", disable_web_page_preview:
     except Exception as exc:
         logger.exception("Errore inatteso durante invio Telegram: %s", exc)
         return False
+from telegram_manager_Version2 import *  # noqa: F401,F403
