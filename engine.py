@@ -101,6 +101,41 @@ def _classify_signal(prev_close: float, last_close: float, lvn: float) -> str:
     return "WAIT"
 
 
+def _calculate_rsi(closes: pd.Series, period: int) -> Optional[float]:
+    if closes is None or len(closes) < period + 1:
+        return None
+
+    delta = closes.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+
+    last_avg_gain = avg_gain.iloc[-1]
+    last_avg_loss = avg_loss.iloc[-1]
+
+    if pd.isna(last_avg_gain) or pd.isna(last_avg_loss):
+        return None
+
+    if last_avg_loss == 0:
+        return 100.0
+
+    rs = last_avg_gain / last_avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return round(float(rsi), 2)
+
+
+def _apply_rsi_filter(signal: str, rsi_value: Optional[float]) -> str:
+    if signal == "LONG":
+        if rsi_value is None or rsi_value > CONFIG.strategy.rsi_long_max:
+            return "WAIT"
+    elif signal == "SHORT":
+        if rsi_value is None or rsi_value < CONFIG.strategy.rsi_short_min:
+            return "WAIT"
+    return signal
+
+
 def analyze_ticker(ticker_name: str) -> Optional[Dict]:
     file_path = os.path.join(CONFIG.runtime.data_dir, f"{ticker_name}.csv")
     df = _safe_read_csv(file_path)
@@ -125,6 +160,7 @@ def analyze_ticker(ticker_name: str) -> Optional[Dict]:
             "date": str(last_date.date()),
             "price": round(last_close, 3),
             "lvn": None,
+            "rsi": _calculate_rsi(df["Close"], CONFIG.strategy.rsi_period),
             "signal": "WAIT",
             "reason": "No valid LVN detected",
         }
@@ -132,12 +168,16 @@ def analyze_ticker(ticker_name: str) -> Optional[Dict]:
     target_lvn = None
     signal = "WAIT"
     reason = "No touch on LVN"
+    rsi_value = _calculate_rsi(df["Close"], CONFIG.strategy.rsi_period)
 
     for lvn in lvns:
         if abs(last_close - lvn) <= CONFIG.strategy.price_tolerance:
             target_lvn = round(lvn, 3)
             signal = _classify_signal(prev_close, last_close, lvn)
+            signal = _apply_rsi_filter(signal, rsi_value)
             reason = f"Price touched LVN {target_lvn}"
+            if signal == "WAIT":
+                reason = f"Price touched LVN {target_lvn}, RSI filter blocked entry"
             break
 
     return {
@@ -145,6 +185,7 @@ def analyze_ticker(ticker_name: str) -> Optional[Dict]:
         "date": str(last_date.date()),
         "price": round(last_close, 3),
         "lvn": target_lvn,
+        "rsi": rsi_value,
         "signal": signal,
         "reason": reason,
     }
@@ -174,6 +215,7 @@ def run_scanner() -> List[Dict]:
                     "date": None,
                     "price": None,
                     "lvn": None,
+                    "rsi": None,
                     "signal": "ERROR",
                     "reason": str(e),
                 }
