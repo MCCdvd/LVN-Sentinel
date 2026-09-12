@@ -159,16 +159,20 @@ def analyze_ticker(ticker_name: str) -> Optional[Dict]:
     target_lvn = None
     signal = "WAIT"
     reason = "No touch on LVN"
-    last_rsi = _compute_rsi_series(df["Close"]).iloc[-1]
 
     for lvn in lvns:
         if abs(last_close - lvn) <= CONFIG.strategy.price_tolerance:
             target_lvn = round(lvn, 3)
             base_signal = _classify_signal(prev_close, last_close, lvn)
-            signal = apply_rsi_entry_filter(base_signal, last_rsi)
-            if base_signal in {"LONG", "SHORT"} and signal == "WAIT":
-                reason = f"RSI filter blocked {base_signal} (RSI={round(float(last_rsi), 2)})"
+            if base_signal in {"LONG", "SHORT"}:
+                last_rsi = _compute_rsi_series(df["Close"]).iloc[-1]
+                signal = apply_rsi_entry_filter(base_signal, last_rsi)
+                if signal == "WAIT":
+                    reason = f"RSI filter blocked {base_signal} (RSI={round(float(last_rsi), 2)})"
+                else:
+                    reason = f"Price touched LVN {target_lvn}"
             else:
+                signal = base_signal
                 reason = f"Price touched LVN {target_lvn}"
             break
 
