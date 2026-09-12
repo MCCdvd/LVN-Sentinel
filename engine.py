@@ -101,6 +101,33 @@ def _classify_signal(prev_close: float, last_close: float, lvn: float) -> str:
     return "WAIT"
 
 
+def _compute_rsi_series(close_series: pd.Series) -> pd.Series:
+    period = int(CONFIG.strategy.rsi_period)
+    delta = close_series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.mask((avg_loss == 0) & (avg_gain > 0), 100.0)
+    rsi = rsi.mask((avg_gain == 0) & (avg_loss > 0), 0.0)
+    rsi = rsi.mask((avg_gain == 0) & (avg_loss == 0), 50.0)
+    return rsi
+
+
+def apply_rsi_entry_filter(signal: str, rsi_value: Optional[float]) -> str:
+    if signal not in {"LONG", "SHORT"}:
+        return signal
+    if rsi_value is None or pd.isna(rsi_value):
+        return "WAIT"
+    if signal == "LONG" and float(rsi_value) > float(CONFIG.strategy.rsi_long_max):
+        return "WAIT"
+    if signal == "SHORT" and float(rsi_value) < float(CONFIG.strategy.rsi_short_min):
+        return "WAIT"
+    return signal
+
+
 def analyze_ticker(ticker_name: str) -> Optional[Dict]:
     file_path = os.path.join(CONFIG.runtime.data_dir, f"{ticker_name}.csv")
     df = _safe_read_csv(file_path)
@@ -132,12 +159,17 @@ def analyze_ticker(ticker_name: str) -> Optional[Dict]:
     target_lvn = None
     signal = "WAIT"
     reason = "No touch on LVN"
+    last_rsi = _compute_rsi_series(df["Close"]).iloc[-1]
 
     for lvn in lvns:
         if abs(last_close - lvn) <= CONFIG.strategy.price_tolerance:
             target_lvn = round(lvn, 3)
-            signal = _classify_signal(prev_close, last_close, lvn)
-            reason = f"Price touched LVN {target_lvn}"
+            base_signal = _classify_signal(prev_close, last_close, lvn)
+            signal = apply_rsi_entry_filter(base_signal, last_rsi)
+            if base_signal in {"LONG", "SHORT"} and signal == "WAIT":
+                reason = f"RSI filter blocked {base_signal} (RSI={round(float(last_rsi), 2)})"
+            else:
+                reason = f"Price touched LVN {target_lvn}"
             break
 
     return {
