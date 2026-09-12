@@ -86,7 +86,7 @@ def _classify_signal(prev_close: float, last_close: float, lvn: float) -> str:
     return "WAIT"
 
 
-def _signal_for_index(df: pd.DataFrame, idx: int) -> Tuple[str, Optional[float], str]:
+def _signal_for_index(df: pd.DataFrame, idx: int, rsi_series: Optional[pd.Series] = None) -> Tuple[str, Optional[float], str]:
     if idx < CONFIG.strategy.window_profile:
         return "WAIT", None, "Insufficient profile window"
 
@@ -103,7 +103,16 @@ def _signal_for_index(df: pd.DataFrame, idx: int) -> Tuple[str, Optional[float],
 
     for lvn in lvns:
         if abs(last_close - lvn) <= CONFIG.strategy.price_tolerance:
-            signal = _classify_signal(prev_close, last_close, lvn)
+            base_signal = _classify_signal(prev_close, last_close, lvn)
+            signal = base_signal
+            current_rsi = None
+            if rsi_series is not None and idx < len(rsi_series):
+                current_rsi = rsi_series.iloc[idx]
+            if base_signal in {"LONG", "SHORT"}:
+                signal = ENGINE.apply_rsi_entry_filter(base_signal, current_rsi)
+                if signal == "WAIT":
+                    rsi_text = "NA" if current_rsi is None or pd.isna(current_rsi) else round(float(current_rsi), 2)
+                    return signal, round(float(lvn), 3), f"RSI filter blocked {base_signal} (RSI={rsi_text})"
             return signal, round(float(lvn), 3), f"Price touched LVN {round(float(lvn), 3)}"
 
     return "WAIT", None, "No touch on LVN"
@@ -319,6 +328,7 @@ def run_backtest(data_dir: str, output_dir: str) -> Tuple[pd.DataFrame, pd.DataF
         if df is None or len(df) < CONFIG.strategy.window_profile + 1:
             continue
 
+        rsi_series = ENGINE._compute_rsi_series(df["Close"])
         position: Optional[PositionState] = None
 
         for idx in range(CONFIG.strategy.window_profile, len(df)):
@@ -326,7 +336,7 @@ def run_backtest(data_dir: str, output_dir: str) -> Tuple[pd.DataFrame, pd.DataF
             date_str = str(pd.to_datetime(row["Date"]).date())
             close_price = float(row["Close"])
 
-            signal, _, _ = _signal_for_index(df, idx)
+            signal, _, _ = _signal_for_index(df, idx, rsi_series)
 
             if position is not None:
                 closed_trade = _update_position(position, date_str, close_price)
