@@ -86,9 +86,44 @@ def _classify_signal(prev_close: float, last_close: float, lvn: float) -> str:
     return "WAIT"
 
 
-def _signal_for_index(df: pd.DataFrame, idx: int) -> Tuple[str, Optional[float], str]:
+def _calculate_rsi(closes: pd.Series, period: int) -> Optional[float]:
+    if closes is None or len(closes) < period + 1:
+        return None
+
+    delta = closes.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+
+    last_avg_gain = avg_gain.iloc[-1]
+    last_avg_loss = avg_loss.iloc[-1]
+
+    if pd.isna(last_avg_gain) or pd.isna(last_avg_loss):
+        return None
+
+    if last_avg_loss == 0:
+        return 100.0
+
+    rs = last_avg_gain / last_avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return round(float(rsi), 2)
+
+
+def _apply_rsi_filter(signal: str, rsi_value: Optional[float]) -> str:
+    if signal == "LONG":
+        if rsi_value is None or rsi_value > CONFIG.strategy.rsi_long_max:
+            return "WAIT"
+    elif signal == "SHORT":
+        if rsi_value is None or rsi_value < CONFIG.strategy.rsi_short_min:
+            return "WAIT"
+    return signal
+
+
+def _signal_for_index(df: pd.DataFrame, idx: int) -> Tuple[str, Optional[float], str, Optional[float]]:
     if idx < CONFIG.strategy.window_profile:
-        return "WAIT", None, "Insufficient profile window"
+        return "WAIT", None, "Insufficient profile window", None
 
     analysis_window = df.iloc[idx - CONFIG.strategy.window_profile:idx].copy()
     last_row = df.iloc[idx]
@@ -96,17 +131,22 @@ def _signal_for_index(df: pd.DataFrame, idx: int) -> Tuple[str, Optional[float],
 
     last_close = float(last_row["Close"])
     prev_close = float(prev_row["Close"])
+    rsi_value = _calculate_rsi(df["Close"].iloc[: idx + 1], CONFIG.strategy.rsi_period)
 
     lvns = ENGINE.get_lvn_nodes(analysis_window)
     if not lvns:
-        return "WAIT", None, "No valid LVN detected"
+        return "WAIT", None, "No valid LVN detected", rsi_value
 
     for lvn in lvns:
         if abs(last_close - lvn) <= CONFIG.strategy.price_tolerance:
             signal = _classify_signal(prev_close, last_close, lvn)
-            return signal, round(float(lvn), 3), f"Price touched LVN {round(float(lvn), 3)}"
+            signal = _apply_rsi_filter(signal, rsi_value)
+            reason = f"Price touched LVN {round(float(lvn), 3)}"
+            if signal == "WAIT":
+                reason = f"Price touched LVN {round(float(lvn), 3)}, RSI filter blocked entry"
+            return signal, round(float(lvn), 3), reason, rsi_value
 
-    return "WAIT", None, "No touch on LVN"
+    return "WAIT", None, "No touch on LVN", rsi_value
 
 
 def _open_position(ticker: str, signal: str, date_str: str, price: float) -> Optional[PositionState]:
@@ -326,7 +366,7 @@ def run_backtest(data_dir: str, output_dir: str) -> Tuple[pd.DataFrame, pd.DataF
             date_str = str(pd.to_datetime(row["Date"]).date())
             close_price = float(row["Close"])
 
-            signal, _, _ = _signal_for_index(df, idx)
+            signal, _, _, _ = _signal_for_index(df, idx)
 
             if position is not None:
                 closed_trade = _update_position(position, date_str, close_price)
