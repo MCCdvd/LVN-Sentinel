@@ -183,28 +183,32 @@ def update_all_positions(current_prices_map: dict, daily_signals_map: dict | Non
         if entry_price <= 0 or quantity <= 0:
             continue
 
-        hard_stop_long = entry_price * (1 - HARD_STOP_PCT)
-        hard_stop_short = entry_price * (1 + HARD_STOP_PCT)
-
-        if position_type == "LONG" and current_price <= hard_stop_long:
-            final_pnl = (current_price - entry_price) * quantity
-            total_pnl = pnl_euro + final_pnl - CONFIG.strategy.commissione_chiusura
-            save_to_history(ticker, total_pnl, note="Hard stop loss -3%")
-            indices_to_remove.append(idx)
-            messages.append(f"🛑 HARD STOP LOSS su {ticker} a {current_price}€. PnL finale: {round(total_pnl, 2)}€")
-            continue
-
-        if position_type == "SHORT" and current_price >= hard_stop_short:
-            final_pnl = (entry_price - current_price) * quantity
-            total_pnl = pnl_euro + final_pnl - CONFIG.strategy.commissione_chiusura
-            save_to_history(ticker, total_pnl, note="Hard stop loss +3%")
-            indices_to_remove.append(idx)
-            messages.append(f"🛑 HARD STOP LOSS su {ticker} a {current_price}€. PnL finale: {round(total_pnl, 2)}€")
-            continue
-
         current_signal = str(daily_signals_map.get(ticker, "")).upper().strip()
 
         if not tp1_hit:
+            if position_type == "LONG":
+                hard_stop_price = entry_price * 0.97
+                if current_price <= hard_stop_price:
+                    final_pnl = (current_price - entry_price) * quantity
+                    total_pnl = pnl_euro + final_pnl - CONFIG.strategy.commissione_chiusura
+                    save_to_history(ticker, total_pnl, note="Hard stop loss -3%")
+                    indices_to_remove.append(idx)
+                    messages.append(
+                        f"🛑 HARD STOP LOSS su {ticker} a {current_price}€. PnL finale: {round(total_pnl, 2)}€"
+                    )
+                    continue
+            else:
+                hard_stop_price = entry_price * 1.03
+                if current_price >= hard_stop_price:
+                    final_pnl = (entry_price - current_price) * quantity
+                    total_pnl = pnl_euro + final_pnl - CONFIG.strategy.commissione_chiusura
+                    save_to_history(ticker, total_pnl, note="Hard stop loss +3%")
+                    indices_to_remove.append(idx)
+                    messages.append(
+                        f"🛑 HARD STOP LOSS su {ticker} a {current_price}€. PnL finale: {round(total_pnl, 2)}€"
+                    )
+                    continue
+
             opposite_signal = (
                 (position_type == "LONG" and current_signal == "SHORT")
                 or (position_type == "SHORT" and current_signal == "LONG")
@@ -242,8 +246,7 @@ def update_all_positions(current_prices_map: dict, daily_signals_map: dict | Non
 
                 messages.append(f"💰 Segnale opposto su {ticker}: chiuso circa 50%.")
                 continue
-
-        if tp1_hit:
+        else:
             is_exit = False
 
             if position_type == "LONG":
