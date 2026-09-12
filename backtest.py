@@ -103,12 +103,16 @@ def _signal_for_index(df: pd.DataFrame, idx: int, rsi_series: Optional[pd.Series
 
     for lvn in lvns:
         if abs(last_close - lvn) <= CONFIG.strategy.price_tolerance:
-            signal = _classify_signal(prev_close, last_close, lvn)
+            base_signal = _classify_signal(prev_close, last_close, lvn)
+            signal = base_signal
             if hasattr(ENGINE, "apply_rsi_entry_filter"):
                 current_rsi = None
                 if rsi_series is not None and idx < len(rsi_series):
                     current_rsi = rsi_series.iloc[idx]
-                signal = ENGINE.apply_rsi_entry_filter(signal, current_rsi)
+                signal = ENGINE.apply_rsi_entry_filter(base_signal, current_rsi)
+                if base_signal in {"LONG", "SHORT"} and signal == "WAIT":
+                    rsi_text = "NA" if current_rsi is None or pd.isna(current_rsi) else round(float(current_rsi), 2)
+                    return signal, round(float(lvn), 3), f"RSI filter blocked {base_signal} (RSI={rsi_text})"
             return signal, round(float(lvn), 3), f"Price touched LVN {round(float(lvn), 3)}"
 
     return "WAIT", None, "No touch on LVN"

@@ -108,6 +108,8 @@ def _validate_strategy_config(cfg: StrategyConfig) -> None:
         raise ValueError("RSI_LONG_MAX deve essere compreso tra 0 e 100")
     if not 0 <= cfg.rsi_short_min <= 100:
         raise ValueError("RSI_SHORT_MIN deve essere compreso tra 0 e 100")
+    if cfg.rsi_long_max >= cfg.rsi_short_min:
+        raise ValueError("RSI_LONG_MAX deve essere minore di RSI_SHORT_MIN")
 
 
 def _validate_runtime_config(cfg: RuntimeConfig) -> None:
