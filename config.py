@@ -45,6 +45,9 @@ class StrategyConfig:
     lvn_threshold: float = 0.50
     bin_step: float = 0.05
     min_profile_levels: int = 5
+    rsi_period: int = 14
+    rsi_long_max: float = 35.0
+    rsi_short_min: float = 65.0
 
 
 @dataclass(frozen=True)
@@ -99,6 +102,12 @@ def _validate_strategy_config(cfg: StrategyConfig) -> None:
         raise ValueError("BIN_STEP deve essere > 0")
     if cfg.min_profile_levels < 1:
         raise ValueError("MIN_PROFILE_LEVELS deve essere >= 1")
+    if cfg.rsi_period < 2:
+        raise ValueError("RSI_PERIOD deve essere >= 2")
+    if not 0 <= cfg.rsi_long_max <= 100:
+        raise ValueError("RSI_LONG_MAX deve essere compreso tra 0 e 100")
+    if not 0 <= cfg.rsi_short_min <= 100:
+        raise ValueError("RSI_SHORT_MIN deve essere compreso tra 0 e 100")
 
 
 def _validate_runtime_config(cfg: RuntimeConfig) -> None:
@@ -147,6 +156,9 @@ def load_config() -> AppConfig:
         lvn_threshold=_get_env_float("LVN_THRESHOLD", 0.50),
         bin_step=_get_env_float("BIN_STEP", 0.05),
         min_profile_levels=_get_env_int("MIN_PROFILE_LEVELS", 5),
+        rsi_period=_get_env_int("RSI_PERIOD", 14),
+        rsi_long_max=_get_env_float("RSI_LONG_MAX", 35.0),
+        rsi_short_min=_get_env_float("RSI_SHORT_MIN", 65.0),
     )
 
     runtime = RuntimeConfig(
