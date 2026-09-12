@@ -1,7 +1,7 @@
 import logging
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -20,6 +20,20 @@ class SignalResult:
     lvn: Optional[float]
     signal: str
     reason: str = ""
+
+
+@dataclass
+class PositionState:
+    ticker: str
+    direction: str
+    entry_date: str
+    entry_price: float
+    quantity: int
+    initial_quantity: int
+    invested_amount: float
+    pnl_euro: float
+    tp1_hit: bool = False
+    current_stop: float = 0.0
 
 
 def _safe_read_csv(file_path: str) -> Optional[pd.DataFrame]:
@@ -222,3 +236,71 @@ def run_scanner() -> List[Dict]:
             )
 
     return results
+
+
+def update_position(position: PositionState, df: pd.DataFrame, idx: int, date_str: str, current_price: float) -> Optional[Dict]:
+    if position.entry_price <= 0 or position.quantity <= 0:
+        return None
+
+    signal, _, _, _ = _signal_for_index(df, idx)
+
+    if not position.tp1_hit:
+        hard_stop_pct = 0.03
+        if position.direction == "LONG":
+            hard_stop_price = position.entry_price * (1 - hard_stop_pct)
+            if current_price <= hard_stop_price:
+                return _close_trade(position, date_str, current_price, "Hard stop exit")
+        else:
+            hard_stop_price = position.entry_price * (1 + hard_stop_pct)
+            if current_price >= hard_stop_price:
+                return _close_trade(position, date_str, current_price, "Hard stop exit")
+
+        if (position.direction == "LONG" and signal == "SHORT") or (position.direction == "SHORT" and signal == "LONG"):
+            half_qty = position.quantity // 2 or position.quantity
+            closed_pnl = (
+                (current_price - position.entry_price) * half_qty
+                if position.direction == "LONG"
+                else (position.entry_price - current_price) * half_qty
+            )
+
+            position.pnl_euro = position.pnl_euro + closed_pnl - float(CONFIG.strategy.commissione_chiusura)
+            position.quantity -= half_qty
+            position.tp1_hit = True
+            position.current_stop = current_price * 0.98 if position.direction == "LONG" else current_price * 1.02
+
+            if position.quantity <= 0:
+                return {
+                    "ticker": position.ticker,
+                    "direction": position.direction,
+                    "entry_date": position.entry_date,
+                    "exit_date": date_str,
+                    "entry_price": round(position.entry_price, 4),
+                    "exit_price": round(float(current_price), 4),
+                    "quantity": int(position.initial_quantity),
+                    "realized_pnl": round(float(position.pnl_euro), 2),
+                    "return_pct": round((float(position.pnl_euro) / position.invested_amount) * 100, 4)
+                    if position.invested_amount
+                    else 0.0,
+                    "exit_reason": "Opposite LVN TP1 full close",
+                }
+
+    else:
+        is_exit = False
+
+        if position.direction == "LONG":
+            new_stop = current_price * 0.98
+            if new_stop > position.current_stop:
+                position.current_stop = new_stop
+            if current_price <= position.current_stop:
+                is_exit = True
+        else:
+            new_stop = current_price * 1.02
+            if position.current_stop == 0.0 or new_stop < position.current_stop:
+                position.current_stop = new_stop
+            if current_price >= position.current_stop:
+                is_exit = True
+
+        if is_exit:
+            return _close_trade(position, date_str, current_price, "Trailing stop exit")
+
+    return None
