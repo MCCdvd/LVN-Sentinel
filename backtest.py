@@ -191,15 +191,14 @@ def _close_trade(position: PositionState, exit_date: str, exit_price: float, exi
     }
 
 
-def _update_position(position: PositionState, date_str: str, current_price: float) -> Optional[Dict]:
+def _get_opposite_lvn_signal(df: pd.DataFrame, idx: int, position: PositionState) -> bool:
+    signal, _, _, _ = _signal_for_index(df, idx)
+    return (position.direction == "LONG" and signal == "SHORT") or (position.direction == "SHORT" and signal == "LONG")
+
+
+def _update_position(position: PositionState, df: pd.DataFrame, idx: int, date_str: str, current_price: float) -> Optional[Dict]:
     if position.entry_price <= 0 or position.quantity <= 0:
         return None
-
-    rendimento = (
-        (current_price - position.entry_price) / position.entry_price
-        if position.direction == "LONG"
-        else (position.entry_price - current_price) / position.entry_price
-    )
 
     if not position.tp1_hit:
         hard_stop_pct = 0.03
@@ -212,7 +211,7 @@ def _update_position(position: PositionState, date_str: str, current_price: floa
             if current_price >= hard_stop_price:
                 return _close_trade(position, date_str, current_price, "Hard stop exit")
 
-        if rendimento >= 0.04:
+        if _get_opposite_lvn_signal(df, idx, position):
             half_qty = position.quantity // 2 or position.quantity
             closed_pnl = (
                 (current_price - position.entry_price) * half_qty
@@ -240,7 +239,7 @@ def _update_position(position: PositionState, date_str: str, current_price: floa
                     "return_pct": round((float(position.pnl_euro) / position.invested_amount) * 100, 4)
                     if position.invested_amount
                     else 0.0,
-                    "exit_reason": "TP1 full close",
+                    "exit_reason": "Opposite LVN TP1 full close",
                 }
 
     elif position.tp1_hit:
@@ -380,7 +379,7 @@ def run_backtest(data_dir: str, output_dir: str) -> Tuple[pd.DataFrame, pd.DataF
             signal, _, _, _ = _signal_for_index(df, idx)
 
             if position is not None:
-                closed_trade = _update_position(position, date_str, close_price)
+                closed_trade = _update_position(position, df, idx, date_str, close_price)
                 if closed_trade is not None:
                     trades.append(closed_trade)
                     position = None
