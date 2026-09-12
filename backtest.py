@@ -201,36 +201,47 @@ def _update_position(position: PositionState, date_str: str, current_price: floa
         else (position.entry_price - current_price) / position.entry_price
     )
 
-    if not position.tp1_hit and rendimento >= 0.04:
-        half_qty = position.quantity // 2 or position.quantity
-        closed_pnl = (
-            (current_price - position.entry_price) * half_qty
-            if position.direction == "LONG"
-            else (position.entry_price - current_price) * half_qty
-        )
+    if not position.tp1_hit:
+        hard_stop_pct = 0.03
+        if position.direction == "LONG":
+            hard_stop_price = position.entry_price * (1 - hard_stop_pct)
+            if current_price <= hard_stop_price:
+                return _close_trade(position, date_str, current_price, "Hard stop exit")
+        else:
+            hard_stop_price = position.entry_price * (1 + hard_stop_pct)
+            if current_price >= hard_stop_price:
+                return _close_trade(position, date_str, current_price, "Hard stop exit")
 
-        position.pnl_euro = position.pnl_euro + closed_pnl - float(CONFIG.strategy.commissione_chiusura)
-        position.quantity -= half_qty
-        position.tp1_hit = True
-        position.current_stop = (
-            current_price * 0.98 if position.direction == "LONG" else current_price * 1.02
-        )
+        if rendimento >= 0.04:
+            half_qty = position.quantity // 2 or position.quantity
+            closed_pnl = (
+                (current_price - position.entry_price) * half_qty
+                if position.direction == "LONG"
+                else (position.entry_price - current_price) * half_qty
+            )
 
-        if position.quantity <= 0:
-            return {
-                "ticker": position.ticker,
-                "direction": position.direction,
-                "entry_date": position.entry_date,
-                "exit_date": date_str,
-                "entry_price": round(position.entry_price, 4),
-                "exit_price": round(float(current_price), 4),
-                "quantity": int(position.initial_quantity),
-                "realized_pnl": round(float(position.pnl_euro), 2),
-                "return_pct": round((float(position.pnl_euro) / position.invested_amount) * 100, 4)
-                if position.invested_amount
-                else 0.0,
-                "exit_reason": "TP1 full close",
-            }
+            position.pnl_euro = position.pnl_euro + closed_pnl - float(CONFIG.strategy.commissione_chiusura)
+            position.quantity -= half_qty
+            position.tp1_hit = True
+            position.current_stop = (
+                current_price * 0.98 if position.direction == "LONG" else current_price * 1.02
+            )
+
+            if position.quantity <= 0:
+                return {
+                    "ticker": position.ticker,
+                    "direction": position.direction,
+                    "entry_date": position.entry_date,
+                    "exit_date": date_str,
+                    "entry_price": round(position.entry_price, 4),
+                    "exit_price": round(float(current_price), 4),
+                    "quantity": int(position.initial_quantity),
+                    "realized_pnl": round(float(position.pnl_euro), 2),
+                    "return_pct": round((float(position.pnl_euro) / position.invested_amount) * 100, 4)
+                    if position.invested_amount
+                    else 0.0,
+                    "exit_reason": "TP1 full close",
+                }
 
     elif position.tp1_hit:
         is_exit = False
