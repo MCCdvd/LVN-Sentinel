@@ -108,10 +108,11 @@ def _signal_for_index(df: pd.DataFrame, idx: int, rsi_series: Optional[pd.Series
             current_rsi = None
             if rsi_series is not None and idx < len(rsi_series):
                 current_rsi = rsi_series.iloc[idx]
-            signal = ENGINE.apply_rsi_entry_filter(base_signal, current_rsi)
-            if base_signal in {"LONG", "SHORT"} and signal == "WAIT":
-                rsi_text = "NA" if current_rsi is None or pd.isna(current_rsi) else round(float(current_rsi), 2)
-                return signal, round(float(lvn), 3), f"RSI filter blocked {base_signal} (RSI={rsi_text})"
+            if base_signal in {"LONG", "SHORT"}:
+                signal = ENGINE.apply_rsi_entry_filter(base_signal, current_rsi)
+                if signal == "WAIT":
+                    rsi_text = "NA" if current_rsi is None or pd.isna(current_rsi) else round(float(current_rsi), 2)
+                    return signal, round(float(lvn), 3), f"RSI filter blocked {base_signal} (RSI={rsi_text})"
             return signal, round(float(lvn), 3), f"Price touched LVN {round(float(lvn), 3)}"
 
     return "WAIT", None, "No touch on LVN"
