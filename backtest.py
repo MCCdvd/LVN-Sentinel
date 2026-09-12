@@ -86,39 +86,6 @@ def _classify_signal(prev_close: float, last_close: float, lvn: float) -> str:
     return "WAIT"
 
 
-def _compute_rsi_series(close_series: pd.Series) -> pd.Series:
-    if hasattr(ENGINE, "_compute_rsi_series"):
-        return ENGINE._compute_rsi_series(close_series)
-
-    period = int(CONFIG.strategy.rsi_period)
-    delta = close_series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1 / period, min_periods=period, adjust=False).mean()
-    rs = avg_gain / avg_loss.replace(0, float("nan"))
-    rsi = 100 - (100 / (1 + rs))
-    rsi = rsi.mask((avg_loss == 0) & (avg_gain > 0), 100.0)
-    rsi = rsi.mask((avg_gain == 0) & (avg_loss > 0), 0.0)
-    rsi = rsi.mask((avg_gain == 0) & (avg_loss == 0), 50.0)
-    return rsi
-
-
-def _apply_rsi_entry_filter(signal: str, rsi_value: Optional[float]) -> str:
-    if hasattr(ENGINE, "apply_rsi_entry_filter"):
-        return ENGINE.apply_rsi_entry_filter(signal, rsi_value)
-
-    if signal not in {"LONG", "SHORT"}:
-        return signal
-    if rsi_value is None or pd.isna(rsi_value):
-        return "WAIT"
-    if signal == "LONG" and float(rsi_value) > float(CONFIG.strategy.rsi_long_max):
-        return "WAIT"
-    if signal == "SHORT" and float(rsi_value) < float(CONFIG.strategy.rsi_short_min):
-        return "WAIT"
-    return signal
-
-
 def _signal_for_index(df: pd.DataFrame, idx: int, rsi_series: Optional[pd.Series] = None) -> Tuple[str, Optional[float], str]:
     if idx < CONFIG.strategy.window_profile:
         return "WAIT", None, "Insufficient profile window"
@@ -141,7 +108,7 @@ def _signal_for_index(df: pd.DataFrame, idx: int, rsi_series: Optional[pd.Series
             current_rsi = None
             if rsi_series is not None and idx < len(rsi_series):
                 current_rsi = rsi_series.iloc[idx]
-            signal = _apply_rsi_entry_filter(base_signal, current_rsi)
+            signal = ENGINE.apply_rsi_entry_filter(base_signal, current_rsi)
             if base_signal in {"LONG", "SHORT"} and signal == "WAIT":
                 rsi_text = "NA" if current_rsi is None or pd.isna(current_rsi) else round(float(current_rsi), 2)
                 return signal, round(float(lvn), 3), f"RSI filter blocked {base_signal} (RSI={rsi_text})"
@@ -360,7 +327,7 @@ def run_backtest(data_dir: str, output_dir: str) -> Tuple[pd.DataFrame, pd.DataF
         if df is None or len(df) < CONFIG.strategy.window_profile + 1:
             continue
 
-        rsi_series = _compute_rsi_series(df["Close"])
+        rsi_series = ENGINE._compute_rsi_series(df["Close"])
         position: Optional[PositionState] = None
 
         for idx in range(CONFIG.strategy.window_profile, len(df)):
