@@ -4,6 +4,7 @@ import argparse
 import itertools
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -159,12 +160,8 @@ def _apply_rsi_filter(signal: str, rsi_value: Optional[float], rsi_long_max: flo
     return signal
 
 
-def _classify_signal(prev_close: float, last_close: float, lvn: float, price_tolerance_pct: float) -> str:
-    if lvn == 0:
-        return "WAIT"
-
-    pct_distance = abs(last_close - lvn) / lvn * 100
-    if pct_distance > price_tolerance_pct:
+def _classify_signal(prev_close: float, last_close: float, lvn: float, price_tolerance: float) -> str:
+    if abs(last_close - lvn) > price_tolerance:
         return "WAIT"
 
     if prev_close > lvn:
@@ -179,7 +176,7 @@ def _signal_for_index(
     df: pd.DataFrame,
     idx: int,
     window_profile: int,
-    price_tolerance_pct: float,
+    price_tolerance: float,
     bin_step: float,
     lvn_threshold: float,
     min_profile_levels: int,
@@ -203,8 +200,8 @@ def _signal_for_index(
         return "WAIT", None, "No valid LVN detected", rsi_value
 
     for lvn in lvns:
-        if abs(last_close - lvn) / lvn * 100 <= price_tolerance_pct:
-            signal = _classify_signal(prev_close, last_close, lvn, price_tolerance_pct)
+        if abs(last_close - lvn) <= price_tolerance:
+            signal = _classify_signal(prev_close, last_close, lvn, price_tolerance)
             signal = _apply_rsi_filter(signal, rsi_value, rsi_long_max, rsi_short_min)
             reason = f"Price touched LVN {round(float(lvn), 3)}"
             if signal == "WAIT":
@@ -355,7 +352,7 @@ def run_backtest(
     data_dir: str,
     tickers: List[str],
     window_profile: int,
-    price_tolerance_pct: float,
+    price_tolerance: float,
     lvn_threshold: float,
     output_dir: str,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -364,7 +361,7 @@ def run_backtest(
     trades: List[Dict] = []
     params = dict(
         window_profile=window_profile,
-        price_tolerance_pct=price_tolerance_pct,
+        price_tolerance=price_tolerance,
         bin_step=CONFIG.strategy.bin_step,
         lvn_threshold=lvn_threshold,
         min_profile_levels=CONFIG.strategy.min_profile_levels,
@@ -391,7 +388,7 @@ def run_backtest(
                 df,
                 idx,
                 window_profile,
-                price_tolerance_pct,
+                price_tolerance,
                 CONFIG.strategy.bin_step,
                 lvn_threshold,
                 CONFIG.strategy.min_profile_levels,
@@ -470,31 +467,31 @@ def main() -> None:
     parser.add_argument("--output-dir", default=os.path.join(CONFIG.runtime.database_dir, "grid_search_round2"), help="Output directory")
     parser.add_argument("--tickers", nargs="*", default=DEFAULT_TICKERS, help="Ticker list to test")
     parser.add_argument("--window-profiles", default="12,15,18,20", help="Comma-separated window profile values")
-    parser.add_argument("--price-tolerance-pcts", default="0.15,0.18,0.20,0.22,0.25", help="Comma-separated tolerance percentages")
+    parser.add_argument("--price-tolerance-pcts", default="0.15,0.18,0.20,0.22,0.25", help="Comma-separated absolute tolerance values")
     parser.add_argument("--lvn-thresholds", default="0.25,0.30,0.35,0.40", help="Comma-separated LVN threshold values")
     parser.add_argument("--top-n", type=int, default=20, help="How many top results to export in ranking")
     args = parser.parse_args()
 
     window_profiles = _parse_int_list(args.window_profiles)
-    price_tolerance_pcts = _parse_float_list(args.price_tolerance_pcts)
+    price_tolerance_values = _parse_float_list(args.price_tolerance_pcts)
     lvn_thresholds = _parse_float_list(args.lvn_thresholds)
 
     os.makedirs(args.output_dir, exist_ok=True)
 
     results: List[Dict] = []
-    combos = list(itertools.product(window_profiles, price_tolerance_pcts, lvn_thresholds))
+    combos = list(itertools.product(window_profiles, price_tolerance_values, lvn_thresholds))
     total = len(combos)
 
-    for i, (window_profile, price_tolerance_pct, lvn_threshold) in enumerate(combos, start=1):
+    for i, (window_profile, price_tolerance, lvn_threshold) in enumerate(combos, start=1):
         run_dir = os.path.join(
             args.output_dir,
-            f"wp{window_profile}_pt{str(price_tolerance_pct).replace('.', 'p')}_lvn{str(lvn_threshold).replace('.', 'p')}",
+            f"wp{window_profile}_pt{str(price_tolerance).replace('.', 'p')}_lvn{str(lvn_threshold).replace('.', 'p')}",
         )
         trades_df, summary_global_df = run_backtest(
             data_dir=args.data_dir,
             tickers=args.tickers,
             window_profile=window_profile,
-            price_tolerance_pct=price_tolerance_pct,
+            price_tolerance=price_tolerance,
             lvn_threshold=lvn_threshold,
             output_dir=run_dir,
         )
@@ -503,7 +500,7 @@ def main() -> None:
         metrics.update(
             {
                 "window_profile": window_profile,
-                "price_tolerance_pct": price_tolerance_pct,
+                "price_tolerance": price_tolerance,
                 "lvn_threshold": lvn_threshold,
                 "trade_count": len(trades_df),
                 "run_dir": run_dir,
@@ -511,7 +508,7 @@ def main() -> None:
         )
         results.append(metrics)
         print(
-            f"[{i}/{total}] wp={window_profile} pt={price_tolerance_pct} lvn={lvn_threshold} -> pnl={metrics['total_pnl']} pf={metrics['profit_factor']}"
+            f"[{i}/{total}] wp={window_profile} pt={price_tolerance} lvn={lvn_threshold} -> pnl={metrics['total_pnl']} pf={metrics['profit_factor']}"
         )
 
     results_df = pd.DataFrame(results)

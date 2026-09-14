@@ -1,5 +1,7 @@
 import logging
+import importlib
 import os
+import sys
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -7,7 +9,16 @@ import numpy as np
 import pandas as pd
 from scipy.signal import argrelextrema
 
-from config import CONFIG
+def _load_config_module():
+    try:
+        return importlib.import_module("config")
+    except ModuleNotFoundError:
+        cfg_mod = importlib.import_module("config_Version6")
+        sys.modules.setdefault("config", cfg_mod)
+        return cfg_mod
+
+
+CONFIG = _load_config_module().CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +87,19 @@ def _build_volume_profile(df_window: pd.DataFrame, step: float = None) -> pd.Ser
     return profile
 
 
-def get_lvn_nodes(df_window: pd.DataFrame) -> List[float]:
-    profile = _build_volume_profile(df_window)
+def get_lvn_nodes(
+    df_window: pd.DataFrame,
+    bin_step: Optional[float] = None,
+    lvn_threshold: Optional[float] = None,
+    min_profile_levels: Optional[int] = None,
+) -> List[float]:
+    bin_step = CONFIG.strategy.bin_step if bin_step is None else bin_step
+    lvn_threshold = CONFIG.strategy.lvn_threshold if lvn_threshold is None else lvn_threshold
+    min_profile_levels = CONFIG.strategy.min_profile_levels if min_profile_levels is None else min_profile_levels
 
-    if profile is None or len(profile) < CONFIG.strategy.min_profile_levels:
+    profile = _build_volume_profile(df_window, step=bin_step)
+
+    if profile is None or len(profile) < min_profile_levels:
         return []
 
     values = profile.values
@@ -97,7 +117,7 @@ def get_lvn_nodes(df_window: pd.DataFrame) -> List[float]:
         price_level = float(profile.index[idx])
         level_volume = float(profile.iloc[idx])
 
-        if level_volume < poc_volume * CONFIG.strategy.lvn_threshold:
+        if level_volume < poc_volume * lvn_threshold:
             lvns.append(round(price_level, 3))
 
     return sorted(list(set(lvns)))
