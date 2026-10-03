@@ -88,6 +88,17 @@ def run_sentinel():
         logger.exception("Errore report finale")
         _send_alert(f"❌ <b>ERRORE REPORT:</b> {e}", "errore report finale")
 
+    try:
+        chart_path = portfolio_manager.build_trend_chart()
+        if chart_path:
+            caption = f"📉 <b>{portfolio_manager.REPORT_TITLE}</b> - trend {portfolio_manager.TREND_DAYS} giorni"
+            if not telegram_manager.send_photo(chart_path, caption=caption):
+                logger.warning("Invio grafico trend fallito (trend testuale già incluso nel report)")
+        else:
+            logger.info("Grafico trend non disponibile, uso solo trend testuale")
+    except Exception:
+        logger.exception("Errore generazione/invio grafico trend (non bloccante)")
+
 
 if __name__ == "__main__":
     run_sentinel()
