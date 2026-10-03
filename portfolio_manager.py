@@ -10,6 +10,11 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(CONFIG.runtime.database_dir, "portfolio.csv")
 HIST_PATH = os.path.join(CONFIG.runtime.database_dir, "history.csv")
+DAILY_PNL_PATH = os.path.join(CONFIG.runtime.database_dir, "daily_pnl.csv")
+TREND_CHART_PATH = os.path.join(CONFIG.runtime.database_dir, "pnl_trend_5d.png")
+
+REPORT_TITLE = "LVN Sentinel Report - rev 031026"
+TREND_DAYS = 5
 
 PORTFOLIO_COLUMNS = [
     "ticker",
@@ -22,9 +27,20 @@ PORTFOLIO_COLUMNS = [
     "pnl_euro",
     "entry_date",
     "invested_amount",
+    "last_price",
 ]
 
 HISTORY_COLUMNS = ["date", "ticker", "pnl_euro", "note"]
+DAILY_PNL_COLUMNS = [
+    "date",
+    "realized_day",
+    "realized_total",
+    "unrealized",
+    "total_pnl",
+    "equity",
+    "open_positions",
+    "stale_prices",
+]
 HARD_STOP_PCT = 0.03
 
 
@@ -52,6 +68,27 @@ def _read_csv_safe(path: str, columns: list) -> pd.DataFrame:
     return df[columns].copy()
 
 
+def _write_csv_atomic(df: pd.DataFrame, path: str):
+    """Scrive il CSV su file temporaneo e poi lo sostituisce, evitando file corrotti in caso di crash."""
+    tmp_path = f"{path}.tmp"
+    try:
+        df.to_csv(tmp_path, index=False)
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+
+def _to_float(value, default: float = 0.0) -> float:
+    try:
+        if value is None or pd.isna(value):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _to_bool(value) -> bool:
     if isinstance(value, bool):
         return value
@@ -72,8 +109,8 @@ def init_portfolio():
     )
     port["invested_amount"] = invested_amount.where(invested_amount.notna(), computed_invested_amount)
 
-    port.to_csv(DB_PATH, index=False)
-    hist.to_csv(HIST_PATH, index=False)
+    _write_csv_atomic(port, DB_PATH)
+    _write_csv_atomic(hist, HIST_PATH)
     logger.info("Portfolio inizializzato")
 
 
@@ -123,6 +160,7 @@ def open_position(ticker: str, signal_type: str, price: float) -> str:
         "pnl_euro": -CONFIG.strategy.commissione_apertura,
         "entry_date": datetime.now().strftime("%Y-%m-%d"),
         "invested_amount": invested_amount,
+        "last_price": float(price),
     }
 
     if port.empty:
@@ -130,7 +168,7 @@ def open_position(ticker: str, signal_type: str, price: float) -> str:
     else:
         port = pd.concat([port, pd.DataFrame([new_pos])], ignore_index=True)
 
-    port.to_csv(DB_PATH, index=False)
+    _write_csv_atomic(port, DB_PATH)
 
     logger.info("Aperta posizione %s %s @ %s", signal_type, ticker, price)
     return f"🚀 APERTA POSIZIONE {signal_type} su {ticker} a {price}€ ({quantity} azioni)"
@@ -147,7 +185,7 @@ def save_to_history(ticker: str, pnl: float, note: str = ""):
     }
 
     hist = pd.concat([hist, pd.DataFrame([new_entry])], ignore_index=True)
-    hist.to_csv(HIST_PATH, index=False)
+    _write_csv_atomic(hist, HIST_PATH)
 
     logger.info("Salvata history per %s: %s", ticker, pnl)
 
@@ -179,6 +217,8 @@ def update_all_positions(current_prices_map: dict, daily_signals_map: dict | Non
         except Exception:
             logger.exception("Errore parsing posizione %s", ticker)
             continue
+
+        port.at[idx, "last_price"] = current_price
 
         if entry_price <= 0 or quantity <= 0:
             continue
@@ -283,42 +323,217 @@ def update_all_positions(current_prices_map: dict, daily_signals_map: dict | Non
     if indices_to_remove:
         port = port.drop(indices_to_remove)
 
-    port.to_csv(DB_PATH, index=False)
+    _write_csv_atomic(port, DB_PATH)
     return messages
 
 
-def get_performance_report(prices_map: dict) -> str:
-    liquidita = get_liquidity()
-    port = _read_csv_safe(DB_PATH, PORTFOLIO_COLUMNS)
+def compute_pnl_snapshot(prices_map: dict, today: str | None = None) -> dict:
+    """
+    Calcola lo stato P&L deterministico a partire da history.csv (realizzato)
+    e dalle posizioni aperte (latente). Se manca il prezzo di oggi per un ticker,
+    usa l'ultimo prezzo noto (last_price) e in assenza il prezzo di ingresso.
+    """
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    prices_map = prices_map or {}
+
     hist = _read_csv_safe(HIST_PATH, HISTORY_COLUMNS)
+    port = _read_csv_safe(DB_PATH, PORTFOLIO_COLUMNS)
 
-    pnl_realizzato = pd.to_numeric(hist["pnl_euro"], errors="coerce").fillna(0).sum()
+    hist_pnl = pd.to_numeric(hist["pnl_euro"], errors="coerce").fillna(0)
+    hist_dates = hist["date"].astype(str).str[:10]
+    realized_total = float(hist_pnl.sum())
+    realized_day = float(hist_pnl[hist_dates == today].sum())
 
-    pnl_latente = 0.0
+    unrealized = 0.0
+    stale_tickers = []
     for _, pos in port.iterrows():
         ticker = str(pos["ticker"])
-        cp = float(prices_map.get(ticker, pos["entry_price"]))
-        entry_price = float(pos["entry_price"])
-        quantity = int(pos["quantity"])
+        entry_price = _to_float(pos["entry_price"])
+        quantity = _to_float(pos["quantity"])
+        if entry_price <= 0 or quantity <= 0:
+            continue
+
+        price = _to_float(prices_map.get(ticker), default=0.0)
+        if price <= 0:
+            stale_tickers.append(ticker)
+            price = _to_float(pos["last_price"], default=0.0)
+            if price <= 0:
+                price = entry_price
+
         position_type = str(pos["type"]).upper()
-        pnl_already = float(pos["pnl_euro"]) if pd.notna(pos["pnl_euro"]) else 0.0
+        mark_to_market = (price - entry_price) * quantity if position_type == "LONG" else (entry_price - price) * quantity
+        unrealized += mark_to_market + _to_float(pos["pnl_euro"])
 
-        pnl_latente += (
-            ((cp - entry_price) * quantity if position_type == "LONG" else (entry_price - cp) * quantity)
-            + pnl_already
-        )
+    total_pnl = realized_total + unrealized
+    return {
+        "date": today,
+        "realized_day": round(realized_day, 2),
+        "realized_total": round(realized_total, 2),
+        "unrealized": round(unrealized, 2),
+        "total_pnl": round(total_pnl, 2),
+        "equity": round(CONFIG.strategy.capitale_iniziale + total_pnl, 2),
+        "open_positions": int(len(port)),
+        "stale_prices": ",".join(stale_tickers),
+    }
 
-    equity_totale = CONFIG.strategy.capitale_iniziale + pnl_realizzato + pnl_latente
-    rendimento_pct = ((equity_totale / CONFIG.strategy.capitale_iniziale) - 1) * 100 if CONFIG.strategy.capitale_iniziale else 0
+
+def load_daily_pnl() -> pd.DataFrame:
+    daily = _read_csv_safe(DAILY_PNL_PATH, DAILY_PNL_COLUMNS)
+    if daily.empty:
+        return daily
+    daily["date"] = daily["date"].astype(str).str[:10]
+    for col in ["realized_day", "realized_total", "unrealized", "total_pnl", "equity"]:
+        daily[col] = pd.to_numeric(daily[col], errors="coerce").fillna(0.0)
+    daily["stale_prices"] = daily["stale_prices"].fillna("").astype(str)
+    return daily.drop_duplicates(subset="date", keep="last").sort_values("date").reset_index(drop=True)
+
+
+def _merge_snapshot(daily: pd.DataFrame, snapshot: dict) -> pd.DataFrame:
+    row = pd.DataFrame([snapshot], columns=DAILY_PNL_COLUMNS)
+    if daily.empty:
+        return row
+    daily = daily[daily["date"] != snapshot["date"]]
+    return pd.concat([daily, row], ignore_index=True).sort_values("date").reset_index(drop=True)
+
+
+def record_daily_snapshot(snapshot: dict) -> pd.DataFrame:
+    """Salva (upsert) lo snapshot del giorno: run ripetuti nello stesso giorno sovrascrivono la riga."""
+    _ensure_dirs()
+    daily = _merge_snapshot(load_daily_pnl(), snapshot)
+    _write_csv_atomic(daily, DAILY_PNL_PATH)
+    logger.info("Snapshot P&L giornaliero salvato per %s", snapshot["date"])
+    return daily
+
+
+def _fmt_eur(value: float) -> str:
+    return f"{value:+,.2f}€"
+
+
+def _first_run_date(daily: pd.DataFrame) -> str:
+    dates = list(daily["date"]) if not daily.empty else []
+    hist = _read_csv_safe(HIST_PATH, HISTORY_COLUMNS)
+    dates += [d for d in hist["date"].dropna().astype(str).str[:10] if d and d != "nan"]
+    return min(dates) if dates else "n/d"
+
+
+def _trend_rows(daily: pd.DataFrame, days: int = TREND_DAYS) -> list:
+    """Ultimi N giorni come (data, P&L totale, variazione vs giorno precedente o None)."""
+    totals = [float(v) for v in daily["total_pnl"]]
+    dates = list(daily["date"])
+    start = max(len(totals) - days, 0)
+    return [
+        (dates[i], totals[i], totals[i] - totals[i - 1] if i > 0 else None)
+        for i in range(start, len(totals))
+    ]
+
+
+def _trend_text(daily: pd.DataFrame, days: int = TREND_DAYS) -> str:
+    rows = _trend_rows(daily, days)
+    if not rows:
+        return "n/d"
+
+    lo, hi = min(r[1] for r in rows), max(r[1] for r in rows)
+    blocks = "▁▂▃▄▅▆▇█"
+    lines = []
+    for date, total, change in rows:
+        level = 0 if hi == lo else int(round((total - lo) / (hi - lo) * (len(blocks) - 1)))
+        delta = "" if change is None else f" ({_fmt_eur(change)})"
+        lines.append(f"{date[5:]} {blocks[level]} {_fmt_eur(total)}{delta}")
+    return "\n".join(lines)
+
+
+def get_performance_report(prices_map: dict, today: str | None = None) -> str:
+    """
+    Costruisce il report giornaliero e salva lo snapshot P&L del giorno.
+    Se il salvataggio fallisce il report viene comunque generato in memoria.
+    """
+    liquidita = get_liquidity()
+    snapshot = compute_pnl_snapshot(prices_map, today=today)
+
+    try:
+        daily = record_daily_snapshot(snapshot)
+    except Exception:
+        logger.exception("Errore salvataggio snapshot P&L giornaliero, uso dati in memoria")
+        try:
+            daily = _merge_snapshot(load_daily_pnl(), snapshot)
+        except Exception:
+            logger.exception("Errore lettura storico P&L giornaliero")
+            daily = pd.DataFrame([snapshot], columns=DAILY_PNL_COLUMNS)
+
+    previous = daily[daily["date"] < snapshot["date"]]
+    if previous.empty:
+        day_change_txt = "n/d (primo giorno)"
+        unrealized_change_txt = "n/d"
+    else:
+        prev_row = previous.iloc[-1]
+        day_change_txt = _fmt_eur(snapshot["total_pnl"] - float(prev_row["total_pnl"]))
+        unrealized_change_txt = _fmt_eur(snapshot["unrealized"] - float(prev_row["unrealized"]))
+
+    capitale = CONFIG.strategy.capitale_iniziale
+    rendimento_pct = (snapshot["total_pnl"] / capitale) * 100 if capitale else 0.0
+
+    stale_line = ""
+    if snapshot["stale_prices"]:
+        stale_line = f"⚠️ Prezzi mancanti (ultimo noto): {snapshot['stale_prices']}\n"
 
     return (
-        f"📊 <b>REPORT LVN PORTFOLIO</b>\n"
+        f"📊 <b>{REPORT_TITLE}</b>\n"
+        f"📅 {snapshot['date']}\n"
         f"────────────────\n"
-        f"💰 <b>Equity Totale:</b> {round(equity_totale, 2)}€\n"
-        f"💵 <b>Liquidità:</b> {liquidita}€\n"
-        f"🏢 <b>Posizioni Attive:</b> {len(port)}\n"
-        f"📈 <b>PnL Latente:</b> {round(pnl_latente, 2)}€\n"
-        f"📘 <b>PnL Realizzato:</b> {round(float(pnl_realizzato), 2)}€\n"
+        f"📘 <b>Daily realized P&amp;L:</b> {_fmt_eur(snapshot['realized_day'])}\n"
+        f"📈 <b>Daily unrealized P&amp;L:</b> {_fmt_eur(snapshot['unrealized'])} (Δ {unrealized_change_txt})\n"
+        f"🔄 <b>Variazione giornaliera:</b> {day_change_txt}\n"
         f"────────────────\n"
-        f"📊 <b>Rendimento Totale:</b> {round(float(rendimento_pct), 2)}%"
+        f"💰 <b>Equity Totale:</b> {snapshot['equity']:,.2f}€\n"
+        f"💵 <b>Liquidità:</b> {liquidita:,.2f}€\n"
+        f"🏢 <b>Posizioni Attive:</b> {snapshot['open_positions']}\n"
+        f"📘 <b>PnL Realizzato (totale):</b> {_fmt_eur(snapshot['realized_total'])}\n"
+        f"{stale_line}"
+        f"────────────────\n"
+        f"🏁 <b>Total P&amp;L from first day run:</b> {_fmt_eur(snapshot['total_pnl'])} "
+        f"({round(rendimento_pct, 2)}%, dal {_first_run_date(daily)})\n"
+        f"────────────────\n"
+        f"📉 <b>Trend ultimi {TREND_DAYS} giorni (P&amp;L totale):</b>\n"
+        f"<pre>{_trend_text(daily)}</pre>"
     )
+
+
+def build_trend_chart(path: str = TREND_CHART_PATH, days: int = TREND_DAYS) -> str | None:
+    """Genera il grafico PNG degli ultimi giorni. Ritorna None se matplotlib non è disponibile o mancano dati."""
+    daily = load_daily_pnl()
+    if daily.empty:
+        return None
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        logger.info("matplotlib non installato: grafico trend non generato (uso fallback testuale)")
+        return None
+
+    rows = _trend_rows(daily, days)
+    totals = [r[1] for r in rows]
+    changes = [0.0 if r[2] is None else r[2] for r in rows]
+
+    labels = [r[0][5:] for r in rows]
+    x = list(range(len(labels)))
+    fig, ax = plt.subplots(figsize=(6, 3.2), dpi=120)
+    try:
+        ax.bar(x, changes, color=["#2e7d32" if c >= 0 else "#c62828" for c in changes], alpha=0.5, label="Δ giornaliero")
+        ax.plot(x, totals, marker="o", color="#1565c0", label="P&L totale")
+        ax.axhline(0, color="grey", linewidth=0.8)
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels)
+        ax.set_title(f"{REPORT_TITLE} - ultimi {len(rows)} giorni")
+        ax.set_ylabel("€")
+        ax.legend(loc="best", fontsize=8)
+        ax.grid(alpha=0.3)
+        fig.tight_layout()
+        _ensure_dirs()
+        fig.savefig(path)
+    finally:
+        plt.close(fig)
+
+    return path
