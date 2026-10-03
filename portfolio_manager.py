@@ -71,8 +71,13 @@ def _read_csv_safe(path: str, columns: list) -> pd.DataFrame:
 def _write_csv_atomic(df: pd.DataFrame, path: str):
     """Scrive il CSV su file temporaneo e poi lo sostituisce, evitando file corrotti in caso di crash."""
     tmp_path = f"{path}.tmp"
-    df.to_csv(tmp_path, index=False)
-    os.replace(tmp_path, path)
+    try:
+        df.to_csv(tmp_path, index=False)
+        os.replace(tmp_path, path)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 
 def _to_float(value, default: float = 0.0) -> float:
@@ -411,26 +416,29 @@ def _first_run_date(daily: pd.DataFrame) -> str:
     return min(dates) if dates else "n/d"
 
 
+def _trend_rows(daily: pd.DataFrame, days: int = TREND_DAYS) -> list:
+    """Ultimi N giorni come (data, P&L totale, variazione vs giorno precedente o None)."""
+    totals = [float(v) for v in daily["total_pnl"]]
+    dates = list(daily["date"])
+    start = max(len(totals) - days, 0)
+    return [
+        (dates[i], totals[i], totals[i] - totals[i - 1] if i > 0 else None)
+        for i in range(start, len(totals))
+    ]
+
+
 def _trend_text(daily: pd.DataFrame, days: int = TREND_DAYS) -> str:
-    if daily.empty:
+    rows = _trend_rows(daily, days)
+    if not rows:
         return "n/d"
 
-    last = daily.tail(days).reset_index(drop=True)
-    totals = list(last["total_pnl"])
-    prev_total = None
-    full = daily.reset_index(drop=True)
-    start_pos = len(full) - len(last)
-    if start_pos > 0:
-        prev_total = float(full.loc[start_pos - 1, "total_pnl"])
-
-    lo, hi = min(totals), max(totals)
+    lo, hi = min(r[1] for r in rows), max(r[1] for r in rows)
     blocks = "▁▂▃▄▅▆▇█"
     lines = []
-    for i, row in last.iterrows():
-        level = 0 if hi == lo else int(round((row["total_pnl"] - lo) / (hi - lo) * (len(blocks) - 1)))
-        base = totals[i - 1] if i > 0 else prev_total
-        delta = "" if base is None else f" ({_fmt_eur(row['total_pnl'] - base)})"
-        lines.append(f"{row['date'][5:]} {blocks[level]} {_fmt_eur(row['total_pnl'])}{delta}")
+    for date, total, change in rows:
+        level = 0 if hi == lo else int(round((total - lo) / (hi - lo) * (len(blocks) - 1)))
+        delta = "" if change is None else f" ({_fmt_eur(change)})"
+        lines.append(f"{date[5:]} {blocks[level]} {_fmt_eur(total)}{delta}")
     return "\n".join(lines)
 
 
@@ -505,25 +513,20 @@ def build_trend_chart(path: str = TREND_CHART_PATH, days: int = TREND_DAYS) -> s
         logger.info("matplotlib non installato: grafico trend non generato (uso fallback testuale)")
         return None
 
-    last = daily.tail(days)
-    full_totals = list(daily["total_pnl"])
-    start = len(daily) - len(last)
-    prev = full_totals[start - 1] if start > 0 else None
-    changes = []
-    for i, value in enumerate(last["total_pnl"]):
-        base = full_totals[start + i - 1] if i > 0 else prev
-        changes.append(0.0 if base is None else value - base)
+    rows = _trend_rows(daily, days)
+    totals = [r[1] for r in rows]
+    changes = [0.0 if r[2] is None else r[2] for r in rows]
 
-    labels = [d[5:] for d in last["date"]]
+    labels = [r[0][5:] for r in rows]
     x = list(range(len(labels)))
     fig, ax = plt.subplots(figsize=(6, 3.2), dpi=120)
     try:
         ax.bar(x, changes, color=["#2e7d32" if c >= 0 else "#c62828" for c in changes], alpha=0.5, label="Δ giornaliero")
-        ax.plot(x, list(last["total_pnl"]), marker="o", color="#1565c0", label="P&L totale")
+        ax.plot(x, totals, marker="o", color="#1565c0", label="P&L totale")
         ax.axhline(0, color="grey", linewidth=0.8)
         ax.set_xticks(x)
         ax.set_xticklabels(labels)
-        ax.set_title(f"{REPORT_TITLE} - ultimi {len(last)} giorni")
+        ax.set_title(f"{REPORT_TITLE} - ultimi {len(rows)} giorni")
         ax.set_ylabel("€")
         ax.legend(loc="best", fontsize=8)
         ax.grid(alpha=0.3)
